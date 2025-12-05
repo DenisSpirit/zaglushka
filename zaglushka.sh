@@ -1,43 +1,120 @@
 #!/bin/bash
 
-# Проверка на права root
+# --- ЦВЕТА И ПЕРЕМЕННЫЕ ---
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# --- 0. ДИСКЛЕЙМЕР И ПРОВЕРКИ ---
+clear
+echo -e "${RED}============================================================${NC}"
+echo -e "${YELLOW}   🛡️  ULTIMATE SECURE SERVER SETUP (XRAY + NEXTCLOUD)  🛡️${NC}"
+echo -e "${RED}============================================================${NC}"
+echo -e "Скрипт выполнит следующие действия:"
+echo -e "1. ${GREEN}Настроит Firewall:${NC} Закроет всё, кроме VPN и Web портов. Панель будет скрыта."
+echo -e "2. ${GREEN}Создаст сайт:${NC} Маскировка под Nextcloud + Пасхалка (admin/admin)."
+echo -e "3. ${GREEN}Установит панель:${NC} 3x-ui (MHSanaei)."
+echo -e "4. ${GREEN}Выпустит SSL:${NC} Автоматически через Let's Encrypt."
+echo -e "5. ${GREEN}Настроит Nginx:${NC} Разделение портов (80->HTTPS, 8080->Xray Fallback)."
+echo -e ""
+echo -e "${YELLOW}ТРЕБОВАНИЯ:${NC}"
+echo -e "- Чистая система Ubuntu/Debian."
+echo -e "- Домен, направленный на IP этого сервера."
+echo -e "${RED}============================================================${NC}"
+echo -e ""
+read -p "Нажмите ENTER, чтобы начать..."
+
 if [ "$EUID" -ne 0 ]; then
-  echo "Пожалуйста, запустите этот скрипт от имени root (sudo)."
+  echo -e "${RED}❌ Ошибка: Запустите скрипт от имени root!${NC}"
   exit
 fi
 
-echo "=================================================="
-echo "   Автоматическая настройка Nextcloud-маскировки"
-echo "=================================================="
+# --- 1. СБОР ДАННЫХ ---
+echo -e "\n${CYAN}--- [1/8] СБОР ДАННЫХ ---${NC}"
+read -p "🌐 Введите ваш домен (например, example.com): " DOMAIN
+if [ -z "$DOMAIN" ]; then echo -e "${RED}❌ Домен обязателен!${NC}"; exit; fi
 
-# 1. Запрос домена
-read -p "Введите ваш домен (например, ananjev.grain-prof.ru): " DOMAIN
-if [ -z "$DOMAIN" ]; then
-    echo "Домен не введен. Используем заглушку '_'"
-    DOMAIN="_"
-fi
+read -p "📧 Email для сертификатов (например, admin@example.com): " EMAIL
+if [ -z "$EMAIL" ]; then EMAIL="admin@$DOMAIN"; fi
 
-# Папка сайта
+read -p "🔢 Введите порт для панели 3x-ui (например, 2053): " PANEL_PORT
+if [ -z "$PANEL_PORT" ]; then echo -e "${RED}❌ Порт обязателен!${NC}"; exit; fi
+
+# --- 2. ОБНОВЛЕНИЕ СИСТЕМЫ ---
+echo -e "\n${CYAN}--- [2/8] ОБНОВЛЕНИЕ СИСТЕМЫ ---${NC}"
+apt update -q
+apt install nginx ufw wget curl socat cron tar -y -q
+
+# --- 3. НАСТРОЙКА FIREWALL (БЕЗОПАСНОСТЬ) ---
+echo -e "\n${CYAN}--- [3/8] НАСТРОЙКА FIREWALL (UFW) ---${NC}"
+# Если UFW не установлен - ставим
+if ! command -v ufw &> /dev/null; then apt install ufw -y; fi
+
+ufw --force reset > /dev/null
+ufw default deny incoming
+ufw default allow outgoing
+
+# Разрешаем порты
+ufw allow 22/tcp comment 'SSH'
+ufw allow 80/tcp comment 'HTTP Redirect'
+ufw allow 443/tcp comment 'Xray HTTPS'
+ufw allow 8443/tcp comment 'Xray XHTTP'
+ufw allow 8080/tcp comment 'Hidden Site Local' 
+# ПОРТ ПАНЕЛИ НЕ ОТКРЫВАЕМ! (Security through obscurity)
+
+echo "y" | ufw enable
+echo -e "${GREEN}✅ Firewall настроен. Порт панели $PANEL_PORT закрыт снаружи (доступ только через туннель).${NC}"
+
+# --- 4. ПОДГОТОВКА КОНТЕНТА САЙТА ---
+echo -e "\n${CYAN}--- [4/8] СОЗДАНИЕ САЙТА-МАСКИРОВКИ ---${NC}"
 WEB_DIR="/var/www/html"
-
-# 2. Подготовка папки
-echo "[+] Очистка папки $WEB_DIR..."
 rm -rf $WEB_DIR/*
 mkdir -p $WEB_DIR
 
-# 3. Скачивание картинок
-echo "[+] Скачивание логотипа и пасхалки..."
+# Функция загрузки с проверкой
+download_img() {
+    local url=$1
+    local dest=$2
+    local name=$3
+    echo -e "Загрузка $name..."
+    if wget -q -O "$dest" "$url"; then
+        # Проверка размера (защита от пустых файлов)
+        fsize=$(stat -c%s "$dest")
+        if [ "$fsize" -lt 1000 ]; then
+            echo -e "${YELLOW}⚠️ Файл $name слишком маленький. Ссылка могла устареть.${NC}"
+            read -p "Введите свою ссылку для $name: " new_url
+            wget -q -O "$dest" "$new_url"
+        else
+            echo -e "${GREEN}OK${NC}"
+        fi
+    else
+        echo -e "${RED}Ошибка загрузки $name!${NC}"
+        read -p "Введите рабочую ссылку для $name: " new_url
+        wget -q -O "$dest" "$new_url"
+    fi
+}
 
-# Логотип (Nextcloud)
-wget -q -O "$WEB_DIR/logo.png" "https://image.pngaaa.com/85/1004085-middle.png"
-if [ $? -eq 0 ]; then echo "OK: Логотип скачан"; else echo "ERROR: Не удалось скачать логотип"; fi
+# Новые ссылки (Raw версии)
+URL_LOGO="https://raw.githubusercontent.com/DenisSpirit/zaglushka/main/Logo.svg.png"
+URL_MEME="https://raw.githubusercontent.com/DenisSpirit/zaglushka/main/Pic.jpg"
 
-# Пасхалка (Кот с пальцем)
-wget -q -O "$WEB_DIR/secret_meme.png" "https://cs6.pikabu.ru/post_img/big/2015/07/10/7/1436522597_1729911668.PNG"
-if [ $? -eq 0 ]; then echo "OK: Пасхалка скачана"; else echo "ERROR: Не удалось скачать пасхалку"; fi
+# Спрашиваем про кастомные ссылки
+echo -e "${YELLOW}Хотите использовать стандартные картинки? [y/n]${NC}"
+read -p "Ваш выбор: " USE_DEFAULT
 
-# 4. Создание index.html
-echo "[+] Генерация index.html с пасхалкой..."
+if [ "$USE_DEFAULT" != "y" ]; then
+    read -p "Ссылка на Логотип: " URL_LOGO
+    read -p "Ссылка на Пасхалку: " URL_MEME
+fi
+
+download_img "$URL_LOGO" "$WEB_DIR/logo.png" "logo.png"
+# Сохраняем мем как jpg, так как в источнике это jpg
+download_img "$URL_MEME" "$WEB_DIR/secret_meme.jpg" "secret_meme.jpg"
+
+# Генерация HTML
+echo "Генерация index.html..."
 cat << 'EOF' > "$WEB_DIR/index.html"
 <!DOCTYPE html>
 <html lang="en">
@@ -95,13 +172,22 @@ cat << 'EOF' > "$WEB_DIR/index.html"
             z-index: 10; transition: opacity 0.5s ease;
         }
         .footer a { color: white; text-decoration: none; font-weight: bold; }
+        
         #secret-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             z-index: 9999; display: none; opacity: 0; transition: opacity 1s ease-in;
-            background-image: url('/secret_meme.png'), url('https://raw.githubusercontent.com/nextcloud/server/master/core/img/background.jpg');
+            /* Исправлено расширение на .jpg */
+            background-image: url('/secret_meme.jpg'), url('https://raw.githubusercontent.com/nextcloud/server/master/core/img/background.jpg');
             background-repeat: no-repeat, no-repeat;
             background-position: center center, center center;
             background-size: contain, cover;
+        }
+        .secret-text {
+            position: absolute; bottom: 50px; left: 0; width: 100%; text-align: center;
+            font-family: "Impact", "Arial Black", sans-serif;
+            font-size: 60px; font-weight: bold; color: white; text-transform: uppercase;
+            text-shadow: 2px 2px 0 #000, -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000;
+            padding: 0 20px;
         }
         .hidden { display: none !important; }
         .spinner {
@@ -127,10 +213,7 @@ cat << 'EOF' > "$WEB_DIR/index.html"
                 </div>
                 <button type="submit" id="login-btn">Log in <div class="spinner"></div></button>
             </form>
-            <div class="links">
-                <a onclick="toggleView('device')">Log in with device</a>
-                <a onclick="toggleView('forgot')">Forgot password?</a>
-            </div>
+            <div class="links"><a onclick="toggleView('device')">Log in with device</a><a onclick="toggleView('forgot')">Forgot password?</a></div>
         </div>
         <div id="device-view" class="hidden">
             <div style="margin-bottom: 20px; font-weight: 600; color: #444;">Device Login</div>
@@ -145,88 +228,108 @@ cat << 'EOF' > "$WEB_DIR/index.html"
             <div class="links"><a onclick="toggleView('login')">Back to login</a></div>
         </div>
     </div>
-    <div class="footer" id="main-footer">
-        <a href="https://nextcloud.com" target="_blank">Nextcloud</a> – a safe home for all your data
-    </div>
-    <div id="secret-overlay"></div>
+    <div class="footer" id="main-footer"><a href="https://nextcloud.com" target="_blank">Nextcloud</a> – a safe home for all your data</div>
+    <div id="secret-overlay"><div class="secret-text">Ебать ты молодец!!!!</div></div>
 <script>
     function toggleView(view) {
         const views = ['login-view', 'forgot-view', 'device-view'];
-        document.querySelectorAll('.warning-box').forEach(el => el.style.display = 'none');
-        document.querySelectorAll('form').forEach(f => f.reset());
-        views.forEach(v => {
-            const el = document.getElementById(v);
-            if (v.startsWith(view)) el.classList.remove('hidden'); else el.classList.add('hidden');
-        });
+        document.querySelectorAll('.warning-box').forEach(el => el.style.display = 'none'); document.querySelectorAll('form').forEach(f => f.reset());
+        views.forEach(v => { const el = document.getElementById(v); if (v.startsWith(view)) el.classList.remove('hidden'); else el.classList.add('hidden'); });
     }
     document.getElementById('login-form').addEventListener('submit', function(e) {
         e.preventDefault();
         const btn = document.getElementById('login-btn'); const spin = btn.querySelector('.spinner'); const err = document.getElementById('login-error');
         const user = document.getElementById('user').value; const pass = document.getElementById('pass').value;
         btn.disabled = true; spin.style.display = 'inline-block'; err.style.display = 'none';
-        if (user === 'admin' && pass === 'admin') {
-            setTimeout(() => {
-                document.getElementById('main-container').style.opacity = '0'; document.getElementById('main-footer').style.opacity = '0';
-                const overlay = document.getElementById('secret-overlay'); overlay.style.display = 'block'; setTimeout(() => { overlay.style.opacity = '1'; }, 50);
-            }, 1000); return;
-        }
+        if (user === 'admin' && pass === 'admin') { setTimeout(() => { document.getElementById('main-container').style.opacity = '0'; document.getElementById('main-footer').style.opacity = '0'; const overlay = document.getElementById('secret-overlay'); overlay.style.display = 'block'; setTimeout(() => { overlay.style.opacity = '1'; }, 50); }, 1000); return; }
         setTimeout(() => { btn.disabled = false; spin.style.display = 'none'; err.style.display = 'block'; document.getElementById('pass').value = ''; }, 1500);
     });
-    document.getElementById('device-form').addEventListener('submit', function(e) {
-        e.preventDefault(); const btn = document.getElementById('device-btn'); const spin = btn.querySelector('.spinner'); const msg = document.getElementById('device-msg');
-        btn.disabled = true; spin.style.display = 'inline-block'; msg.style.display = 'none';
-        setTimeout(() => { btn.disabled = false; spin.style.display = 'none'; msg.style.display = 'block'; }, 1000);
-    });
-    document.getElementById('forgot-form').addEventListener('submit', function(e) {
-        e.preventDefault(); const btn = document.getElementById('reset-btn'); const spin = btn.querySelector('.spinner'); const msg = document.getElementById('reset-msg');
-        btn.disabled = true; spin.style.display = 'inline-block';
-        setTimeout(() => { btn.disabled = false; spin.style.display = 'none'; msg.style.display = 'block'; document.getElementById('reset-user').value = ''; }, 1000);
-    });
+    document.getElementById('device-form').addEventListener('submit', function(e) { e.preventDefault(); const btn = document.getElementById('device-btn'); const spin = btn.querySelector('.spinner'); const msg = document.getElementById('device-msg'); btn.disabled = true; spin.style.display = 'inline-block'; msg.style.display = 'none'; setTimeout(() => { btn.disabled = false; spin.style.display = 'none'; msg.style.display = 'block'; }, 1000); });
+    document.getElementById('forgot-form').addEventListener('submit', function(e) { e.preventDefault(); const btn = document.getElementById('reset-btn'); const spin = btn.querySelector('.spinner'); const msg = document.getElementById('reset-msg'); btn.disabled = true; spin.style.display = 'inline-block'; setTimeout(() => { btn.disabled = false; spin.style.display = 'none'; msg.style.display = 'block'; document.getElementById('reset-user').value = ''; }, 1000); });
 </script>
 </body>
 </html>
 EOF
 
-# 5. Настройка Nginx
-echo "[+] Настройка Nginx для домена $DOMAIN..."
+# --- 5. УСТАНОВКА И ПРОВЕРКА ПАНЕЛИ ---
+echo -e "\n${CYAN}--- [5/8] ПРОВЕРКА ПАНЕЛИ 3X-UI ---${NC}"
+if ! command -v x-ui &> /dev/null; then
+    echo -e "${YELLOW}Панель не найдена. Запускаем установку...${NC}"
+    echo -e "${YELLOW}⚠️ ВАЖНО: Когда скрипт спросит порт - введите: $PANEL_PORT ${NC}"
+    echo -e "Нажмите Enter для старта установки панели..."
+    read
+    bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+else
+    echo -e "${GREEN}Панель уже установлена.${NC}"
+fi
+
+# --- 6. ПОЛУЧЕНИЕ СЕРТИФИКАТОВ ---
+echo -e "\n${CYAN}--- [6/8] ВЫПУСК SSL СЕРТИФИКАТОВ ---${NC}"
+# Установка acme.sh
+curl https://get.acme.sh | sh -s email=$EMAIL > /dev/null
+source ~/.bashrc
+
+# Временная остановка Nginx (освобождаем порт 80)
+systemctl stop nginx
+
+# Попытка выпуска
+echo "Выпуск сертификата для $DOMAIN..."
+~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --force
+
+# Создание папки и копирование
+mkdir -p /etc/x-ui/server_certs
+~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+--key-file       /etc/x-ui/server_certs/private.key  \
+--fullchain-file /etc/x-ui/server_certs/public.crt
+
+chmod 644 /etc/x-ui/server_certs/*
+
+# Запуск Nginx обратно
+systemctl start nginx
+
+if [ -f "/etc/x-ui/server_certs/public.crt" ]; then
+    echo -e "${GREEN}✅ Сертификаты успешно получены и скопированы.${NC}"
+else
+    echo -e "${RED}❌ Ошибка получения сертификатов! Проверьте домен и DNS.${NC}"
+fi
+
+# --- 7. КОНФИГУРАЦИЯ NGINX (SPLIT) ---
+echo -e "\n${CYAN}--- [7/8] ФИНАЛЬНАЯ НАСТРОЙКА NGINX ---${NC}"
 cat << EOF > /etc/nginx/sites-enabled/default
+# 1. ПУБЛИЧНЫЙ ПОРТ 80 (Редирект на HTTPS)
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
-
     server_name $DOMAIN;
+    return 301 https://\$host\$request_uri;
+}
 
+# 2. СКРЫТЫЙ ПОРТ 8080 (Для Xray Fallback)
+server {
+    listen 127.0.0.1:8080;
+    server_name $DOMAIN;
     root $WEB_DIR;
     index index.html;
 
-    # === МАСКИРОВКА ПОД NEXTCLOUD (HEADERS) ===
     server_tokens off;
-
-    # Фейковые куки Nextcloud
+    
+    # Маскировка заголовков под Nextcloud
     add_header Set-Cookie "nc_sameSiteCookielax=true; path=/; httponly;secure; samesite=lax";
     add_header Set-Cookie "nc_sameSiteCookiestrict=true; path=/; httponly;secure; samesite=strict";
-    
-    # Заголовки безопасности
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header X-Robots-Tag "none" always;
     add_header X-Download-Options "noopen" always;
     add_header X-Permitted-Cross-Domain-Policies "none" always;
     add_header Referrer-Policy "no-referrer" always;
-    
     add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
 
-    # Обработка ошибок
     error_page 403 /index.html;
     error_page 404 /index.html;
     error_page 500 /index.html;
-    error_page 502 /index.html;
-
-    location / {
-        try_files \$uri \$uri/ =404;
-    }
+    location / { try_files \$uri \$uri/ =404; }
     
-    # Фейковый статус
+    # Фейковый status.php
     location = /status.php {
         return 200 '{"installed":true,"maintenance":false,"needsDbUpgrade":false,"version":"27.0.2.1","versionstring":"27.0.2","edition":"","productname":"Nextcloud"}';
         add_header Content-Type application/json;
@@ -234,13 +337,43 @@ server {
 }
 EOF
 
-# 6. Перезагрузка и права
-echo "[+] Применение настроек..."
-chown -R www-data:www-data $WEB_DIR
-chmod -R 755 $WEB_DIR
+# Проверка конфига и рестарт
+nginx -t
 systemctl restart nginx
 
-echo "=================================================="
-echo "   ГОТОВО! Маскировка Nextcloud активирована."
-echo "   Проверьте в браузере: http://$DOMAIN"
-echo "=================================================="
+# --- 8. ИТОГОВАЯ ИНСТРУКЦИЯ ---
+IP=$(curl -s ifconfig.me)
+echo -e ""
+echo -e "${GREEN}============================================================${NC}"
+echo -e "${GREEN}   ✅  НАСТРОЙКА ЗАВЕРШЕНА!  ✅${NC}"
+echo -e "${GREEN}============================================================${NC}"
+echo -e ""
+echo -e "${RED}⚠️ ВНИМАНИЕ: Порт панели $PANEL_PORT закрыт Файрволом!${NC}"
+echo -e "Вы не сможете зайти по http://$IP:$PANEL_PORT"
+echo -e ""
+echo -e "${YELLOW}👉 КАК ЗАЙТИ В ПАНЕЛЬ:${NC}"
+echo -e "1. На своем ПК откройте терминал (PowerShell/CMD/Terminal)."
+echo -e "2. Введите команду для SSH-туннеля:"
+echo -e "   ${CYAN}ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@$IP${NC}"
+echo -e "3. Не закрывайте окно терминала."
+echo -e "4. В браузере откройте: ${CYAN}http://localhost:$PANEL_PORT${NC}"
+echo -e ""
+echo -e "${YELLOW}👉 ЧТО ПРОПИСАТЬ В НАСТРОЙКАХ XRAY (INBOUND):${NC}"
+echo -e "----------------------------------------------------"
+echo -e "Remark:         ${GREEN}VLESS-Vision${NC}"
+echo -e "Protocol:       ${GREEN}vless${NC}"
+echo -e "Port:           ${GREEN}443${NC} (Обязательно!)"
+echo -e "Transmission:   ${GREEN}TCP${NC}"
+echo -e "Flow:           ${GREEN}xtls-rprx-vision${NC}"
+echo -e "TLS:            ${GREEN}Enabled${NC}"
+echo -e "  -> Domain:    ${GREEN}$DOMAIN${NC}"
+echo -e "  -> Public:    ${GREEN}/etc/x-ui/server_certs/public.crt${NC}"
+echo -e "  -> Private:   ${GREEN}/etc/x-ui/server_certs/private.key${NC}"
+echo -e "Sniffing:       ${GREEN}Enabled${NC}"
+echo -e "FALLBACKS (ВАЖНО!):"
+echo -e "  -> Dest:      ${GREEN}8080${NC}"
+echo -e "  -> Xver:      ${GREEN}0${NC}"
+echo -e "----------------------------------------------------"
+echo -e ""
+echo -e "Проверка сайта: https://$DOMAIN (Попробуйте admin/admin)"
+echo -e "Удачи! 🚀"
