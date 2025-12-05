@@ -1,18 +1,29 @@
 #!/bin/bash
 
-# --- ЦВЕТА ---
+# --- ЦВЕТА И ПЕРЕМЕННЫЕ ---
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 CYAN='\033[0;36m'
-NC='\033[0m'
+NC='\033[0m' # No Color
 
+# --- 0. ДИСКЛЕЙМЕР ---
 clear
 echo -e "${RED}============================================================${NC}"
-echo -e "${YELLOW}   🛡️            ULTIMATE SECURE SETUP                🛡️${NC}"
+echo -e "${YELLOW}   🛡️  ULTIMATE SECURE SERVER SETUP  🛡️${NC}"
 echo -e "${RED}============================================================${NC}"
-echo -e "Скрипт настроит: Firewall, Nginx (Nextcloud маскировка), 3x-ui, SSL."
+echo -e "Этот скрипт автоматически:"
+echo -e "1. Настроит ${GREEN}Firewall (UFW)${NC} и закроет лишние порты."
+echo -e "2. Установит ${GREEN}Nginx${NC} и создаст сайт-маскировку (Nextcloud + Пасхалка)."
+echo -e "3. Установит панель ${GREEN}3x-ui${NC} (если её нет)."
+echo -e "4. Выпустит ${GREEN}SSL сертификаты${NC}."
 echo -e ""
+echo -e "${YELLOW}ТРЕБОВАНИЯ:${NC}"
+echo -e "- Чистый сервер Ubuntu/Debian."
+echo -e "- Свободный домен, направленный на IP этого сервера."
+echo -e "${RED}============================================================${NC}"
+echo -e ""
+read -p "Нажмите ENTER, если вы готовы продолжить..."
 
 if [ "$EUID" -ne 0 ]; then
   echo -e "${RED}❌ Ошибка: Запустите скрипт от имени root!${NC}"
@@ -20,43 +31,51 @@ if [ "$EUID" -ne 0 ]; then
 fi
 
 # --- 1. СБОР ДАННЫХ ---
-echo -e "\n${CYAN}--- [1/8] НАСТРОЙКА ---${NC}"
+echo -e "\n${CYAN}--- [1/8] СБОР ДАННЫХ ---${NC}"
 read -p "🌐 Введите ваш домен (например, example.com): " DOMAIN
 if [ -z "$DOMAIN" ]; then echo -e "${RED}❌ Домен обязателен!${NC}"; exit; fi
 
-read -p "📧 Email для SSL (admin@$DOMAIN): " EMAIL
+read -p "📧 Email для сертификатов (например, admin@$DOMAIN): " EMAIL
 if [ -z "$EMAIL" ]; then EMAIL="admin@$DOMAIN"; fi
 
-read -p "🔢 Порт панели 3x-ui (например, 2053): " PANEL_PORT
+read -p "🔢 Введите порт для панели 3x-ui (например, 2053): " PANEL_PORT
 if [ -z "$PANEL_PORT" ]; then echo -e "${RED}❌ Порт обязателен!${NC}"; exit; fi
 
-# --- 2. ОБНОВЛЕНИЕ ---
-echo -e "\n${CYAN}--- [2/8] УСТАНОВКА ПАКЕТОВ ---${NC}"
+# --- 2. ОБНОВЛЕНИЕ И УСТАНОВКА ---
+echo -e "\n${CYAN}--- [2/8] ОБНОВЛЕНИЕ СИСТЕМЫ ---${NC}"
 apt update -q
 apt install nginx ufw wget curl socat cron tar -y -q
 
-# --- 3. FIREWALL ---
-echo -e "\n${CYAN}--- [3/8] НАСТРОЙКА FIREWALL ---${NC}"
+# --- 3. НАСТРОЙКА FIREWALL ---
+echo -e "\n${CYAN}--- [3/8] НАСТРОЙКА FIREWALL (UFW) ---${NC}"
 if ! command -v ufw &> /dev/null; then apt install ufw -y; fi
+
+# Сброс правил для чистоты
 ufw --force reset > /dev/null
 ufw default deny incoming
 ufw default allow outgoing
+
+# Открываем только нужное
 ufw allow 22/tcp comment 'SSH'
 ufw allow 80/tcp comment 'HTTP Redirect'
 ufw allow 443/tcp comment 'Xray HTTPS'
 ufw allow 8443/tcp comment 'Xray XHTTP'
-ufw allow 8080/tcp comment 'Hidden Site'
-# ПОРТ ПАНЕЛИ ЗАКРЫТ (Доступ только через туннель)
-echo "y" | ufw enable
-echo -e "${GREEN}✅ Порты настроены. Панель скрыта.${NC}"
+ufw allow 8080/tcp comment 'Hidden Site Local' 
 
-# --- 4. САЙТ (ИЗ РЕПОЗИТОРИЯ) ---
-echo -e "\n${CYAN}--- [4/8] ЗАГРУЗКА КОНТЕНТА (GITHUB) ---${NC}"
+# ВАЖНО: Порт панели мы НЕ открываем в UFW, чтобы спрятать её.
+# Доступ будет только через SSH-туннель.
+
+echo "y" | ufw enable
+echo -e "${GREEN}✅ Firewall активирован. Порты 22, 80, 443, 8443, 8080 открыты.${NC}"
+echo -e "${YELLOW}🔒 Порт панели $PANEL_PORT закрыт от внешнего мира.${NC}"
+
+# --- 4. СОЗДАНИЕ САЙТА ---
+echo -e "\n${CYAN}--- [4/8] ЗАГРУЗКА КОНТЕНТА ---${NC}"
 WEB_DIR="/var/www/html"
 rm -rf $WEB_DIR/*
 mkdir -p $WEB_DIR
 
-# Ссылки на картинки (Raw)
+# Ссылки на файлы
 URL_LOGO="https://raw.githubusercontent.com/DenisSpirit/zaglushka/main/Logo.svg.png"
 URL_MEME="https://raw.githubusercontent.com/DenisSpirit/zaglushka/main/Pic.jpg"
 
@@ -66,6 +85,7 @@ echo "Загрузка пасхалки..."
 wget -q -O "$WEB_DIR/secret_meme.jpg" "$URL_MEME"
 
 # Генерация HTML
+echo "Генерация index.html..."
 cat << 'EOF' > "$WEB_DIR/index.html"
 <!DOCTYPE html>
 <html lang="en">
@@ -127,7 +147,6 @@ cat << 'EOF' > "$WEB_DIR/index.html"
         #secret-overlay {
             position: fixed; top: 0; left: 0; width: 100vw; height: 100vh;
             z-index: 9999; display: none; opacity: 0; transition: opacity 1s ease-in;
-            /* ИСПОЛЬЗУЕМ ВАШУ КАРТИНКУ Pic.jpg */
             background-image: url('/secret_meme.jpg'), url('https://raw.githubusercontent.com/nextcloud/server/master/core/img/background.jpg');
             background-repeat: no-repeat, no-repeat;
             background-position: center center, center center;
@@ -180,9 +199,7 @@ cat << 'EOF' > "$WEB_DIR/index.html"
         </div>
     </div>
     <div class="footer" id="main-footer"><a href="https://nextcloud.com" target="_blank">Nextcloud</a> – a safe home for all your data</div>
-    
     <div id="secret-overlay"><div class="secret-text">Ебать ты молодец!!!!</div></div>
-
 <script>
     function toggleView(view) {
         const views = ['login-view', 'forgot-view', 'device-view'];
@@ -204,11 +221,11 @@ cat << 'EOF' > "$WEB_DIR/index.html"
 </html>
 EOF
 
-# --- 5. ПАНЕЛЬ 3X-UI ---
+# --- 5. УСТАНОВКА ПАНЕЛИ 3X-UI ---
 echo -e "\n${CYAN}--- [5/8] ПРОВЕРКА ПАНЕЛИ ---${NC}"
 if ! command -v x-ui &> /dev/null; then
-    echo -e "${YELLOW}Установка панели...${NC}"
-    echo -e "${YELLOW}⚠️ ВАЖНО: Введите порт $PANEL_PORT, когда спросит!${NC}"
+    echo -e "${YELLOW}Панель не найдена. Установка...${NC}"
+    echo -e "${YELLOW}⚠️ ВАЖНО: Когда скрипт спросит порт - введите: $PANEL_PORT ${NC}"
     sleep 3
     bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
 else
@@ -219,12 +236,16 @@ fi
 echo -e "\n${CYAN}--- [6/8] ВЫПУСК SSL ---${NC}"
 curl https://get.acme.sh | sh -s email=$EMAIL > /dev/null
 source ~/.bashrc
+
 systemctl stop nginx
 ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --force
+
+# Копирование сертификатов
 mkdir -p /etc/x-ui/server_certs
 ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
 --key-file       /etc/x-ui/server_certs/private.key  \
 --fullchain-file /etc/x-ui/server_certs/public.crt
+
 chmod 644 /etc/x-ui/server_certs/*
 systemctl start nginx
 
@@ -243,16 +264,24 @@ server {
     root $WEB_DIR;
     index index.html;
     server_tokens off;
+    
+    # Маскировка заголовков под Nextcloud
     add_header Set-Cookie "nc_sameSiteCookielax=true; path=/; httponly;secure; samesite=lax";
     add_header Set-Cookie "nc_sameSiteCookiestrict=true; path=/; httponly;secure; samesite=strict";
     add_header X-Content-Type-Options "nosniff" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header X-Robots-Tag "none" always;
+    add_header X-Download-Options "noopen" always;
+    add_header X-Permitted-Cross-Domain-Policies "none" always;
+    add_header Referrer-Policy "no-referrer" always;
     add_header Strict-Transport-Security "max-age=15552000; includeSubDomains" always;
+
     error_page 403 /index.html;
     error_page 404 /index.html;
     error_page 500 /index.html;
     location / { try_files \$uri \$uri/ =404; }
+    
+    # Фейковый статус для умных сканеров
     location = /status.php {
         return 200 '{"installed":true,"version":"27.0.2"}';
         add_header Content-Type application/json;
@@ -264,12 +293,25 @@ systemctl restart nginx
 # --- 8. ФИНАЛ ---
 IP=$(curl -s ifconfig.me)
 echo -e ""
-echo -e "${GREEN}✅ ГОТОВО!${NC}"
-echo -e "${YELLOW}SSH ТУННЕЛЬ ДЛЯ ВХОДА В ПАНЕЛЬ:${NC}"
-echo -e "${GREEN}ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@$IP${NC}"
-echo -e "Открыть в браузере: http://localhost:$PANEL_PORT"
+echo -e "${GREEN}============================================================${NC}"
+echo -e "${GREEN}   ✅  ГОТОВО! СЕРВЕР ЗАЩИЩЕН И НАСТРОЕН  ✅${NC}"
+echo -e "${GREEN}============================================================${NC}"
 echo -e ""
-echo -e "Данные для VLESS (в панели):"
-echo -e "Public Key: /etc/x-ui/server_certs/public.crt"
-echo -e "Private Key: /etc/x-ui/server_certs/private.key"
-echo -e "Fallback Dest: 8080"
+echo -e "${RED}⚠️ ВНИМАНИЕ: Порт панели $PANEL_PORT ЗАКРЫТ ФАЙРВОЛОМ!${NC}"
+echo -e "Вы не сможете зайти по http://$IP:$PANEL_PORT"
+echo -e ""
+echo -e "${YELLOW}👉 ШАГ 1: ПОДКЛЮЧЕНИЕ К ПАНЕЛИ:${NC}"
+echo -e "Выполните на своем компьютере:"
+echo -e "${CYAN}ssh -L $PANEL_PORT:127.0.0.1:$PANEL_PORT root@$IP${NC}"
+echo -e "Затем откройте: ${CYAN}http://localhost:$PANEL_PORT${NC}"
+echo -e ""
+echo -e "${YELLOW}👉 ШАГ 2: НАСТРОЙКА XRAY:${NC}"
+echo -e "Создайте подключение (Inbound) с такими данными:"
+echo -e "Protocol:       ${GREEN}vless${NC}"
+echo -e "Port:           ${GREEN}443${NC}"
+echo -e "Flow:           ${GREEN}xtls-rprx-vision${NC}"
+echo -e "Public Key:     ${GREEN}/etc/x-ui/server_certs/public.crt${NC}"
+echo -e "Private Key:    ${GREEN}/etc/x-ui/server_certs/private.key${NC}"
+echo -e "Fallback Dest:  ${GREEN}8080${NC}"
+echo -e ""
+echo -e "Проверка сайта: https://$DOMAIN"
